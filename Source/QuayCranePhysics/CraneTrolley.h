@@ -72,6 +72,18 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
     float VelocityBlendAlpha = 0.15f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiSway")
+    float AntiSwayGain = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiSway")
+    float AntiSwayMaxSpeedOverride = 0.3f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|AntiSway")
+    float AntiSwayCorrectionAccel = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|AntiSway")
+    bool bIsAntiSwayActive = false;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|State")
     float CurrentTravelSpeed = 0.0f;
 
@@ -98,6 +110,9 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Trolley")
     void SetHoistInput(float InputValue);
+
+    UFUNCTION(BlueprintCallable, Category = "Trolley|AntiSway")
+    void ApplyAntiSwayCorrection(float CorrectionAccelX);
 
     UFUNCTION(BlueprintCallable, Category = "Trolley")
     void EmergencyStop();

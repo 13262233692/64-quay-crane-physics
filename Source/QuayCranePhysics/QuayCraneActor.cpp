@@ -29,6 +29,8 @@ AQuayCraneActor::AQuayCraneActor()
     CranePortalBeam->SetupAttachment(CraneBoom);
 
     PhysicsManager = CreateDefaultSubobject<UPhysicsSubstepManager>(TEXT("PhysicsManager"));
+
+    AntiSwaySystem = CreateDefaultSubobject<UAntiSwayController>(TEXT("AntiSwaySystem"));
 }
 
 void AQuayCraneActor::BeginPlay()
@@ -218,6 +220,7 @@ void AQuayCraneActor::Tick(float DeltaTime)
 
     UpdateOperationMode(DeltaTime);
     UpdateHoistSync();
+    UpdateAntiSwaySystem(DeltaTime);
 
     if (Spreader)
     {
@@ -601,5 +604,100 @@ void AQuayCraneActor::DrawDebugPhysicsState()
                 *UEnum::GetValueAsString(PhysicsManager->StabilityState),
                 TotalWireTension, PhysicsManager->PeakVelocity),
             nullptr, StabilityColor, 0.1f, true, 1.5f);
+    }
+
+    if (AntiSwaySystem && bAntiSwayEnabled)
+    {
+        FColor SwayColor = AntiSwaySystem->bIsControllerActive ? FColor::Cyan : FColor::Grey;
+        DrawDebugString(GetWorld(), GetActorLocation() + FVector(0, 0, 3000.0f),
+            FString::Printf(TEXT("AntiSway: %s | Angle: %.2f deg | Disp: %.1f cm | Corr: %.1f cm/s²"),
+                AntiSwaySystem->bIsControllerActive ? TEXT("ACTIVE") : TEXT("STANDBY"),
+                FMath::RadiansToDegrees(AntiSwaySystem->TotalSwayAngle),
+                AntiSwaySystem->SwayDisplacementCm,
+                AntiSwaySystem->CorrectionAccelerationX),
+            nullptr, SwayColor, 0.1f, true, 1.5f);
+
+        if (Trolley && Spreader)
+        {
+            FVector TrolleyLoc = Trolley->GetActorLocation();
+            FVector SpreaderLoc = Spreader->GetActorLocation();
+            FVector VerticalRef = FVector(TrolleyLoc.X, TrolleyLoc.Y, SpreaderLoc.Z);
+
+            DrawDebugLine(GetWorld(), TrolleyLoc, VerticalRef, FColor::White, false, 0.1f, 0, 1.0f);
+            DrawDebugLine(GetWorld(), VerticalRef, SpreaderLoc, SwayColor, false, 0.1f, 0, 2.0f);
+
+            if (AntiSwaySystem->bIsControllerActive)
+            {
+                FVector ArrowStart = TrolleyLoc + FVector(0, 0, -200.0f);
+                FVector ArrowEnd = ArrowStart + FVector(AntiSwaySystem->CorrectionAccelerationX * 0.5f, 0, 0);
+                DrawDebugDirectionalArrow(GetWorld(), ArrowStart, ArrowEnd, 50.0f, FColor::Cyan, false, 0.1f, 0, 3.0f);
+            }
+        }
+    }
+}
+
+void AQuayCraneActor::UpdateAntiSwaySystem(float DeltaTime)
+{
+    if (!AntiSwaySystem || !bAntiSwayEnabled || !Trolley || !Spreader)
+    {
+        if (Trolley)
+        {
+            Trolley->ApplyAntiSwayCorrection(0.0f);
+        }
+        bIsAntiSwayEngaged = false;
+        return;
+    }
+
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze)
+    {
+        AntiSwaySystem->ResetController();
+        Trolley->ApplyAntiSwayCorrection(0.0f);
+        bIsAntiSwayEngaged = false;
+        return;
+    }
+
+    FVector TrolleyLoc = Trolley->GetActorLocation();
+    FVector SpreaderLoc = Spreader->GetActorLocation();
+    float HoistLength = Trolley->CurrentHoistLength;
+
+    AntiSwaySystem->UpdateSwayGeometry(TrolleyLoc, SpreaderLoc, HoistLength);
+
+    FVector Correction = AntiSwaySystem->GetCorrectionAcceleration();
+    float CorrectionX = Correction.X;
+
+    Trolley->ApplyAntiSwayCorrection(CorrectionX);
+
+    SwayAngleDeg = FMath::RadiansToDegrees(AntiSwaySystem->TotalSwayAngle);
+    SwayDisplacementCm = AntiSwaySystem->GetSwayDisplacementCm();
+    AntiSwayCorrectionCmSS = CorrectionX;
+    bIsAntiSwayEngaged = AntiSwaySystem->bIsControllerActive;
+
+    CurrentPendulumAngle = SwayAngleDeg;
+}
+
+void AQuayCraneActor::SetAntiSwayEnabled(bool bEnabled)
+{
+    bAntiSwayEnabled = bEnabled;
+
+    if (AntiSwaySystem)
+    {
+        AntiSwaySystem->SetAntiSwayEnabled(bEnabled);
+    }
+
+    if (!bEnabled && Trolley)
+    {
+        Trolley->ApplyAntiSwayCorrection(0.0f);
+    }
+
+    UE_LOG(LogQuayCranePhysics, Log, TEXT("AntiSway system %s"), bEnabled ? TEXT("ENABLED") : TEXT("DISABLED"));
+}
+
+void AQuayCraneActor::SetAntiSwayTargetPosition(float TargetX)
+{
+    if (AntiSwaySystem)
+    {
+        AntiSwaySystem->AntiSwayMode = EAntiSwayMode::PositionTarget;
+        AntiSwaySystem->PositionTargetX = TargetX;
+        UE_LOG(LogQuayCranePhysics, Log, TEXT("AntiSway target position set: %.0f cm"), TargetX);
     }
 }

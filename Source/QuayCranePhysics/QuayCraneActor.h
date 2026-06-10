@@ -7,6 +7,7 @@
 #include "WireRopeActor.h"
 #include "ContainerActor.h"
 #include "PhysicsSubstepManager.h"
+#include "AntiSwayController.h"
 #include "QuayCraneActor.generated.h"
 
 UENUM(BlueprintType)
@@ -62,6 +63,12 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|Physics")
     UPhysicsSubstepManager* PhysicsManager;
 
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|AntiSway")
+    UAntiSwayController* AntiSwaySystem;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|AntiSway")
+    bool bAntiSwayEnabled = true;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|Dimensions")
     float BoomLength = 70000.0f;
 
@@ -116,6 +123,18 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|State")
     bool bIsSafetyInterlockActive = false;
 
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|AntiSway")
+    float SwayAngleDeg = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|AntiSway")
+    float SwayDisplacementCm = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|AntiSway")
+    float AntiSwayCorrectionCmSS = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|AntiSway")
+    bool bIsAntiSwayEngaged = false;
+
     UFUNCTION(BlueprintCallable, Category = "Crane|Control")
     void SetTrolleyTravel(float Input);
 
@@ -143,6 +162,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Crane|Control")
     void CancelAutoSequence();
 
+    UFUNCTION(BlueprintCallable, Category = "Crane|AntiSway")
+    void SetAntiSwayEnabled(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Crane|AntiSway")
+    void SetAntiSwayTargetPosition(float TargetX);
+
     UFUNCTION(BlueprintCallable, Category = "Crane|Debug")
     void DrawDebugPhysicsState();
 
@@ -156,6 +181,7 @@ protected:
     void RegisterPhysicsBodies();
     void CheckSafetyInterlocks();
     void DetectPhysicsExplosion();
+    void UpdateAntiSwaySystem(float DeltaTime);
 
     UPROPERTY()
     TArray<AContainerActor*> NearbyContainers;

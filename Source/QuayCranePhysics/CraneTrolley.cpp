@@ -121,6 +121,13 @@ void ACraneTrolley::UpdateTravelMovement(float DeltaTime)
         }
     }
 
+    float AntiSwaySpeedDelta = 0.0f;
+    if (bIsAntiSwayActive && FMath::Abs(AntiSwayCorrectionAccel) > 0.1f)
+    {
+        AntiSwaySpeedDelta = AntiSwayCorrectionAccel * AntiSwayGain * DeltaTime;
+        CurrentTravelSpeed += AntiSwaySpeedDelta;
+    }
+
     CurrentTravelSpeed = FMath::Clamp(CurrentTravelSpeed, -MaxTravelSpeed, MaxTravelSpeed);
 
     float CurrentAccel = (DeltaTime > 0.0001f) ?
@@ -279,4 +286,10 @@ TArray<FVector> ACraneTrolley::GetWireRopeAnchorWorldPositions() const
 float ACraneTrolley::GetTargetHoistLength() const
 {
     return TargetHoistLength;
+}
+
+void ACraneTrolley::ApplyAntiSwayCorrection(float CorrectionAccelX)
+{
+    AntiSwayCorrectionAccel = CorrectionAccelX;
+    bIsAntiSwayActive = FMath::Abs(CorrectionAccelX) > 0.1f;
 }
