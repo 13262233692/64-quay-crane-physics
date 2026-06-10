@@ -1,0 +1,27 @@
+{
+    "FileVersion": 3,
+    "EngineAssociation": "5.4",
+    "Category": "Simulation",
+    "Description": "Hardcore Port Industrial Heavy Equipment Physics Simulator - Quay Crane Container Lifting Simulation",
+    "Modules": [
+        {
+            "Name": "QuayCranePhysics",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "ChaosSolverPlugin",
+            "Enabled": true
+        },
+        {
+            "Name": "FieldSystemPlugin",
+            "Enabled": true
+        },
+        {
+            "Name": "GeometryCollectionPlugin",
+            "Enabled": true
+        }
+    ]
+}
