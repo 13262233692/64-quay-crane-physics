@@ -43,8 +43,82 @@ void AWireRopeActor::CreateWireRopes()
         Rope->ChainSegments = SegmentsPerRope;
         Rope->AngularSwingLimit = AngularSwingLimit;
         Rope->AngularTwistLimit = AngularTwistLimit;
+        Rope->MaxTensionClamp = PerRopeMaxTensionClamp;
 
         WireRopes.Add(Rope);
+    }
+}
+
+void AWireRopeActor::ComputeSolverSafeStiffness()
+{
+    float BaseStiffness = DefaultStiffness;
+
+    if (LastKnownHoistLength < ShortHoistLengthThreshold)
+    {
+        float Ratio = LastKnownHoistLength / ShortHoistLengthThreshold;
+        float Scale = ShortHoistStiffnessScale + (1.0f - ShortHoistStiffnessScale) * Ratio;
+        BaseStiffness *= Scale;
+    }
+
+    if (bIsInEmergencyRelief)
+    {
+        BaseStiffness *= EmergencyStiffnessReductionFactor;
+    }
+
+    CurrentEffectiveStiffness = BaseStiffness;
+
+    for (UWireRopeConstraintComponent* Rope : WireRopes)
+    {
+        if (Rope && !Rope->bIsBroken)
+        {
+            Rope->SetSpringDamperParams(CurrentEffectiveStiffness, Rope->DampingCoefficient, Rope->WireRestLength);
+        }
+    }
+}
+
+void AWireRopeActor::CheckEmergencyTensionRelief()
+{
+    if (TotalTension > EmergencyTensionReliefThreshold && !bIsInEmergencyRelief)
+    {
+        bIsInEmergencyRelief = true;
+        ComputeSolverSafeStiffness();
+
+        for (UWireRopeConstraintComponent* Rope : WireRopes)
+        {
+            if (Rope && !Rope->bIsBroken)
+            {
+                Rope->DampingCoefficient = DefaultDamping * 3.0f;
+            }
+        }
+
+        UE_LOG(LogQuayCranePhysics, Error, TEXT("EMERGENCY TENSION RELIEF: TotalTension=%.1f > Threshold=%.1f, Stiffness reduced to %.1f"),
+            TotalTension, EmergencyTensionReliefThreshold, CurrentEffectiveStiffness);
+    }
+    else if (bIsInEmergencyRelief && TotalTension < EmergencyTensionReliefThreshold * 0.5f)
+    {
+        bIsInEmergencyRelief = false;
+        ComputeSolverSafeStiffness();
+
+        for (UWireRopeConstraintComponent* Rope : WireRopes)
+        {
+            if (Rope && !Rope->bIsBroken)
+            {
+                Rope->DampingCoefficient = DefaultDamping;
+            }
+        }
+
+        UE_LOG(LogQuayCranePhysics, Log, TEXT("Emergency tension relief DISENGAGED - tension stabilized at %.1f"), TotalTension);
+    }
+
+    if (TotalTension > GlobalMaxTension)
+    {
+        for (UWireRopeConstraintComponent* Rope : WireRopes)
+        {
+            if (Rope && !Rope->bIsBroken)
+            {
+                Rope->CurrentTension = FMath::Min(Rope->CurrentTension, GlobalMaxTension / static_cast<float>(ROPE_COUNT));
+            }
+        }
     }
 }
 
@@ -68,6 +142,9 @@ void AWireRopeActor::ConnectTrolleyToSpreader(
     LastKnownHoistLength = HoistLength;
 
     float RopeLength = HoistLength / static_cast<float>(ROPE_COUNT);
+    RopeLength = FMath::Max(RopeLength, 50.0f);
+
+    ComputeSolverSafeStiffness();
 
     for (int32 i = 0; i < ROPE_COUNT && i < WireRopes.Num(); ++i)
     {
@@ -76,42 +153,51 @@ void AWireRopeActor::ConnectTrolleyToSpreader(
             FVector TrolleyOffset = (i < TrolleyAnchorOffsets.Num()) ? TrolleyAnchorOffsets[i] : FVector::ZeroVector;
             FVector SpreaderOffset = (i < SpreaderAttachOffsets.Num()) ? SpreaderAttachOffsets[i] : FVector::ZeroVector;
 
-            WireRopes[i]->SetSpringDamperParams(DefaultStiffness, DefaultDamping, RopeLength);
+            WireRopes[i]->SetSpringDamperParams(CurrentEffectiveStiffness, DefaultDamping, RopeLength);
             WireRopes[i]->InitializeRope(TrolleyRoot, SpreaderRoot, TrolleyOffset, SpreaderOffset);
         }
     }
 
-    UE_LOG(LogQuayCranePhysics, Log, TEXT("Wire ropes connected: HoistLength=%.1f, RopeLength=%.1f"),
-        HoistLength, RopeLength);
+    UE_LOG(LogQuayCranePhysics, Log, TEXT("Wire ropes connected: HoistLength=%.1f, RopeLength=%.1f, EffStiffness=%.1f"),
+        HoistLength, RopeLength, CurrentEffectiveStiffness);
 }
 
 void AWireRopeActor::UpdateHoistLength(float NewHoistLength)
 {
     LastKnownHoistLength = NewHoistLength;
     float RopeLength = NewHoistLength / static_cast<float>(ROPE_COUNT);
+    RopeLength = FMath::Max(RopeLength, 50.0f);
+
+    ComputeSolverSafeStiffness();
 
     for (UWireRopeConstraintComponent* Rope : WireRopes)
     {
         if (Rope && !Rope->bIsBroken)
         {
-            Rope->SetSpringDamperParams(Rope->SpringStiffness, Rope->DampingCoefficient, RopeLength);
+            Rope->SetSpringDamperParams(CurrentEffectiveStiffness, Rope->DampingCoefficient, RopeLength);
         }
     }
 }
 
 void AWireRopeActor::SetSpringDamperParams(float Stiffness, float Damping)
 {
+    DefaultStiffness = Stiffness;
+    DefaultDamping = Damping;
+    ComputeSolverSafeStiffness();
+
     for (UWireRopeConstraintComponent* Rope : WireRopes)
     {
         if (Rope && !Rope->bIsBroken)
         {
-            Rope->SetSpringDamperParams(Stiffness, Damping, Rope->WireRestLength);
+            Rope->SetSpringDamperParams(CurrentEffectiveStiffness, DefaultDamping, Rope->WireRestLength);
         }
     }
 }
 
 void AWireRopeActor::RepairAllRopes()
 {
+    bIsInEmergencyRelief = false;
+
     for (int32 i = 0; i < WireRopes.Num(); ++i)
     {
         if (WireRopes[i])
@@ -159,14 +245,17 @@ void AWireRopeActor::UpdatePhysicsForLoad(float TotalLoadMass)
 
     float SafetyFactor = 2.5f;
     float NewBreakThreshold = PerRopeForce * SafetyFactor * 10.0f;
-    float NewStiffness = FMath::Max(DefaultStiffness, GravityForce * 0.5f);
+    NewBreakThreshold = FMath::Min(NewBreakThreshold, PerRopeMaxTensionClamp);
+
+    ComputeSolverSafeStiffness();
 
     for (UWireRopeConstraintComponent* Rope : WireRopes)
     {
         if (Rope)
         {
             Rope->BreakThreshold = NewBreakThreshold;
-            Rope->SpringStiffness = NewStiffness;
+            Rope->MaxTensionClamp = PerRopeMaxTensionClamp;
+            Rope->SpringStiffness = CurrentEffectiveStiffness;
         }
     }
 }
@@ -203,6 +292,11 @@ void AWireRopeActor::UpdateTensionMetrics()
             RopeLengths[i] = WireRopes[i]->CurrentWireLength;
             RopeBrokenStates[i] = WireRopes[i]->bIsBroken;
 
+            if (FMath::IsNaN(RopeTensions[i]))
+            {
+                RopeTensions[i] = 0.0f;
+            }
+
             TotalTension += RopeTensions[i];
             MaxTension = FMath::Max(MaxTension, RopeTensions[i]);
             MinTension = FMath::Min(MinTension, RopeTensions[i]);
@@ -213,10 +307,13 @@ void AWireRopeActor::UpdateTensionMetrics()
     {
         MinTension = 0.0f;
     }
+
+    TotalTension = FMath::Clamp(TotalTension, 0.0f, GlobalMaxTension);
 }
 
 void AWireRopeActor::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
     UpdateTensionMetrics();
+    CheckEmergencyTensionRelief();
 }

@@ -35,8 +35,33 @@ void UWireRopeConstraintComponent::InitializeRope(
     LoadAttachOffset = InLoadOffset;
 
     BuildConstraintChain();
-    UE_LOG(LogQuayCranePhysics, Log, TEXT("Wire rope initialized: %d segments, rest length %.1f"),
-        ChainSegments, WireRestLength);
+    UE_LOG(LogQuayCranePhysics, Log, TEXT("Wire rope initialized: %d segments, rest length %.1f, eff stiffness %.1f"),
+        ChainSegments, WireRestLength, ComputeEffectiveStiffness());
+}
+
+float UWireRopeConstraintComponent::ComputeEffectiveStiffness() const
+{
+    if (WireRestLength < MIN_WIRE_LENGTH)
+        return SpringStiffness * SoftStiffnessScale;
+
+    if (WireRestLength < MinRestLengthForFullStiffness)
+    {
+        float Ratio = WireRestLength / MinRestLengthForFullStiffness;
+        float Scale = SoftStiffnessScale + (1.0f - SoftStiffnessScale) * Ratio;
+        return SpringStiffness * Scale;
+    }
+
+    return SpringStiffness;
+}
+
+void UWireRopeConstraintComponent::ConfigureConstraintStability(
+    UPhysicsConstraintComponent* Constraint, float Stiffness, float Damping)
+{
+    if (!Constraint) return;
+
+    Constraint->ConstraintInstance.SetLinearDriveParams(Stiffness, Damping, ForceLimit);
+    Constraint->ConstraintInstance.SetAngularDriveParams(
+        Stiffness * 0.1f, Damping * 0.1f, ForceLimit);
 }
 
 void UWireRopeConstraintComponent::BuildConstraintChain()
@@ -49,6 +74,16 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
         return;
 
     float SegmentLength = WireRestLength / static_cast<float>(ChainSegments);
+    SegmentLength = FMath::Max(SegmentLength, 50.0f);
+
+    EffectiveStiffness = ComputeEffectiveStiffness();
+    bIsInSoftMode = (WireRestLength < MinRestLengthForFullStiffness);
+
+    float SegmentDamping = DampingCoefficient;
+    if (bIsInSoftMode)
+    {
+        SegmentDamping *= SegmentDampingBoostOnShortRope;
+    }
 
     for (int32 i = 0; i < ChainSegments; ++i)
     {
@@ -61,9 +96,18 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
         SegmentMesh->SetMassOverrideInKg(NAME_None, ROPE_SEGMENT_MASS);
         SegmentMesh->SetCollisionEnabled(ECollisionEnabled::PhysicsOnly);
         SegmentMesh->SetCollisionProfileName(TEXT("PhysicsActor"));
-        SegmentMesh->SetLinearDamping(0.5f);
-        SegmentMesh->SetAngularDamping(2.0f);
+        SegmentMesh->SetLinearDamping(bIsInSoftMode ? 1.0f * SegmentDampingBoostOnShortRope : 1.0f);
+        SegmentMesh->SetAngularDamping(bIsInSoftMode ? 4.0f * SegmentDampingBoostOnShortRope : 4.0f);
+        SegmentMesh->SetPhysicsMaxAngularVelocityInDegrees(MaxSegmentAngularVelocity);
         SegmentMesh->RegisterComponent();
+
+        FBodyInstance* BodyInst = SegmentMesh->GetBodyInstance();
+        if (BodyInst)
+        {
+            BodyInst->SolverIterationCount = 30;
+            BodyInst->SolverVelocityIterationCount = 15;
+            BodyInst->ContactOffset = ContactOffsetOverride;
+        }
 
         RopeSegmentMeshes.Add(SegmentMesh);
     }
@@ -77,6 +121,11 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
     RootConstraint->ConstraintSetup.LinearLimit.YMotion = ELinearConstraintMotion::LCM_Limited;
     RootConstraint->ConstraintSetup.LinearLimit.ZMotion = ELinearConstraintMotion::LCM_Limited;
     RootConstraint->ConstraintSetup.LinearLimit.Limit = SegmentLength;
+    RootConstraint->ConstraintSetup.LinearLimit.SoftConstraint = true;
+    RootConstraint->ConstraintSetup.LinearLimit.Stiffness = EffectiveStiffness;
+    RootConstraint->ConstraintSetup.LinearLimit.Damping = SegmentDamping;
+    RootConstraint->ConstraintSetup.LinearLimit.Restitution = 0.0f;
+    RootConstraint->ConstraintSetup.LinearLimit.ContactDistance = SegmentLength * 0.1f;
 
     RootConstraint->ConstraintSetup.AngularLimit.Swing1Limit = AngularSwingLimit;
     RootConstraint->ConstraintSetup.AngularLimit.Swing2Limit = AngularSwingLimit;
@@ -85,9 +134,9 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
     RootConstraint->ConstraintSetup.AngularLimit.Swing1Motion = EAngularConstraintMotion::ACM_Limited;
     RootConstraint->ConstraintSetup.AngularLimit.Swing2Motion = EAngularConstraintMotion::ACM_Limited;
     RootConstraint->ConstraintSetup.AngularLimit.TwistMotion = EAngularConstraintMotion::ACM_Limited;
+    RootConstraint->ConstraintSetup.AngularLimit.SoftConstraint = true;
 
-    RootConstraint->ConstraintInstance.SetLinearDriveParams(SpringStiffness, DampingCoefficient, ForceLimit);
-    RootConstraint->ConstraintInstance.SetAngularDriveParams(SpringStiffness * 0.1f, DampingCoefficient * 0.1f, ForceLimit);
+    ConfigureConstraintStability(RootConstraint, EffectiveStiffness, SegmentDamping);
 
     RootConstraint->SetConstrainedComponents(
         AnchorComponent.Get(), AnchorAttachOffset,
@@ -106,6 +155,11 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
         SegmentConstraint->ConstraintSetup.LinearLimit.YMotion = ELinearConstraintMotion::LCM_Limited;
         SegmentConstraint->ConstraintSetup.LinearLimit.ZMotion = ELinearConstraintMotion::LCM_Limited;
         SegmentConstraint->ConstraintSetup.LinearLimit.Limit = SegmentLength;
+        SegmentConstraint->ConstraintSetup.LinearLimit.SoftConstraint = true;
+        SegmentConstraint->ConstraintSetup.LinearLimit.Stiffness = EffectiveStiffness;
+        SegmentConstraint->ConstraintSetup.LinearLimit.Damping = SegmentDamping;
+        SegmentConstraint->ConstraintSetup.LinearLimit.Restitution = 0.0f;
+        SegmentConstraint->ConstraintSetup.LinearLimit.ContactDistance = SegmentLength * 0.1f;
 
         SegmentConstraint->ConstraintSetup.AngularLimit.Swing1Limit = AngularSwingLimit;
         SegmentConstraint->ConstraintSetup.AngularLimit.Swing2Limit = AngularSwingLimit;
@@ -114,9 +168,9 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
         SegmentConstraint->ConstraintSetup.AngularLimit.Swing1Motion = EAngularConstraintMotion::ACM_Limited;
         SegmentConstraint->ConstraintSetup.AngularLimit.Swing2Motion = EAngularConstraintMotion::ACM_Limited;
         SegmentConstraint->ConstraintSetup.AngularLimit.TwistMotion = EAngularConstraintMotion::ACM_Limited;
+        SegmentConstraint->ConstraintSetup.AngularLimit.SoftConstraint = true;
 
-        SegmentConstraint->ConstraintInstance.SetLinearDriveParams(SpringStiffness, DampingCoefficient, ForceLimit);
-        SegmentConstraint->ConstraintInstance.SetAngularDriveParams(SpringStiffness * 0.1f, DampingCoefficient * 0.1f, ForceLimit);
+        ConfigureConstraintStability(SegmentConstraint, EffectiveStiffness, SegmentDamping);
 
         SegmentConstraint->SetConstrainedComponents(
             RopeSegmentMeshes[i], FVector::ZeroVector,
@@ -134,6 +188,11 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
     EndConstraint->ConstraintSetup.LinearLimit.YMotion = ELinearConstraintMotion::LCM_Limited;
     EndConstraint->ConstraintSetup.LinearLimit.ZMotion = ELinearConstraintMotion::LCM_Limited;
     EndConstraint->ConstraintSetup.LinearLimit.Limit = SegmentLength;
+    EndConstraint->ConstraintSetup.LinearLimit.SoftConstraint = true;
+    EndConstraint->ConstraintSetup.LinearLimit.Stiffness = EffectiveStiffness;
+    EndConstraint->ConstraintSetup.LinearLimit.Damping = SegmentDamping;
+    EndConstraint->ConstraintSetup.LinearLimit.Restitution = 0.0f;
+    EndConstraint->ConstraintSetup.LinearLimit.ContactDistance = SegmentLength * 0.1f;
 
     EndConstraint->ConstraintSetup.AngularLimit.Swing1Limit = AngularSwingLimit;
     EndConstraint->ConstraintSetup.AngularLimit.Swing2Limit = AngularSwingLimit;
@@ -142,15 +201,96 @@ void UWireRopeConstraintComponent::BuildConstraintChain()
     EndConstraint->ConstraintSetup.AngularLimit.Swing1Motion = EAngularConstraintMotion::ACM_Limited;
     EndConstraint->ConstraintSetup.AngularLimit.Swing2Motion = EAngularConstraintMotion::ACM_Limited;
     EndConstraint->ConstraintSetup.AngularLimit.TwistMotion = EAngularConstraintMotion::ACM_Limited;
+    EndConstraint->ConstraintSetup.AngularLimit.SoftConstraint = true;
 
-    EndConstraint->ConstraintInstance.SetLinearDriveParams(SpringStiffness, DampingCoefficient, ForceLimit);
-    EndConstraint->ConstraintInstance.SetAngularDriveParams(SpringStiffness * 0.1f, DampingCoefficient * 0.1f, ForceLimit);
+    ConfigureConstraintStability(EndConstraint, EffectiveStiffness, SegmentDamping);
 
     EndConstraint->SetConstrainedComponents(
         RopeSegmentMeshes.Last(), FVector::ZeroVector,
         LoadComponent.Get(), LoadAttachOffset);
 
     ConstraintChain.Add(EndConstraint);
+}
+
+void UWireRopeConstraintComponent::ApplySoftConstraintMode(float DeltaTime)
+{
+    bool bShouldBeSoft = (WireRestLength < MinRestLengthForFullStiffness);
+
+    if (bShouldBeSoft != bIsInSoftMode)
+    {
+        bIsInSoftMode = bShouldBeSoft;
+        EffectiveStiffness = ComputeEffectiveStiffness();
+
+        float TargetDamping = bIsInSoft ? DampingCoefficient * SegmentDampingBoostOnShortRope : DampingCoefficient;
+
+        for (UPhysicsConstraintComponent* Constraint : ConstraintChain)
+        {
+            if (Constraint)
+            {
+                ConfigureConstraintStability(Constraint, EffectiveStiffness, TargetDamping);
+            }
+        }
+
+        for (UStaticMeshComponent* Segment : RopeSegmentMeshes)
+        {
+            if (Segment)
+            {
+                Segment->SetLinearDamping(bIsInSoftMode ? 1.0f * SegmentDampingBoostOnShortRope : 1.0f);
+                Segment->SetAngularDamping(bIsInSoftMode ? 4.0f * SegmentDampingBoostOnShortRope : 4.0f);
+            }
+        }
+
+        UE_LOG(LogQuayCranePhysics, Log, TEXT("WireRope soft mode %s - EffStiffness=%.1f, RestLen=%.1f"),
+            bIsInSoftMode ? TEXT("ENGAGED") : TEXT("DISENGAGED"), EffectiveStiffness, WireRestLength);
+    }
+}
+
+void UWireRopeConstraintComponent::ClampSegmentVelocities()
+{
+    for (UStaticMeshComponent* Segment : RopeSegmentMeshes)
+    {
+        if (!Segment || !Segment->IsSimulatingPhysics())
+            continue;
+
+        FVector LinVel = Segment->GetPhysicsLinearVelocity();
+        FVector AngVel = Segment->GetPhysicsAngularVelocityInDegrees();
+
+        float LinSpeed = LinVel.Size();
+        float AngSpeed = AngVel.Size();
+
+        if (FMath::IsNaN(LinSpeed) || FMath::IsNaN(AngSpeed))
+        {
+            Segment->SetPhysicsLinearVelocity(FVector::ZeroVector);
+            Segment->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+            continue;
+        }
+
+        if (LinSpeed > MaxSegmentLinearVelocity)
+        {
+            Segment->SetPhysicsLinearVelocity(LinVel.GetSafeNormal() * MaxSegmentLinearVelocity, false);
+        }
+
+        if (AngSpeed > MaxSegmentAngularVelocity)
+        {
+            Segment->SetPhysicsAngularVelocityInDegrees(AngVel.GetSafeNormal() * MaxSegmentAngularVelocity, false);
+        }
+    }
+
+    if (LoadComponent.IsValid() && LoadComponent->IsSimulatingPhysics())
+    {
+        FVector LoadLinVel = LoadComponent->GetPhysicsLinearVelocity();
+        float LoadLinSpeed = LoadLinVel.Size();
+
+        if (FMath::IsNaN(LoadLinSpeed))
+        {
+            LoadComponent->SetPhysicsLinearVelocity(FVector::ZeroVector);
+            LoadComponent->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+        }
+        else if (LoadLinSpeed > MaxSegmentLinearVelocity)
+        {
+            LoadComponent->SetPhysicsLinearVelocity(LoadLinVel.GetSafeNormal() * MaxSegmentLinearVelocity, false);
+        }
+    }
 }
 
 void UWireRopeConstraintComponent::UpdateSpringDamperForces(float DeltaTime)
@@ -165,7 +305,26 @@ void UWireRopeConstraintComponent::UpdateSpringDamperForces(float DeltaTime)
     CurrentWireLength = Delta.Size();
     RopeExtensionRatio = CurrentWireLength / FMath::Max(WireRestLength, MIN_WIRE_LENGTH);
 
-    CurrentTension = CalculateTension();
+    if (RopeExtensionRatio > MaxExtensionRatio)
+    {
+        RopeExtensionRatio = MaxExtensionRatio;
+        if (LoadComponent->IsSimulatingPhysics())
+        {
+            FVector Direction = Delta.GetSafeNormal();
+            FVector TargetPos = AnchorWorldPos + Direction * (WireRestLength * MaxExtensionRatio);
+            FVector Correction = TargetPos - LoadWorldPos;
+            LoadComponent->SetPhysicsLinearVelocity(
+                LoadComponent->GetPhysicsLinearVelocity() + Correction * 0.5f, false);
+        }
+    }
+
+    CurrentTension = FMath::Min(CalculateTension(), MaxTensionClamp);
+
+    if (FMath::IsNaN(CurrentTension))
+    {
+        CurrentTension = 0.0f;
+        UE_LOG(LogQuayCranePhysics, Error, TEXT("WireRope: NaN tension detected and zeroed"));
+    }
 
     if (bEnableBreaking && CurrentTension > BreakThreshold)
     {
@@ -173,13 +332,13 @@ void UWireRopeConstraintComponent::UpdateSpringDamperForces(float DeltaTime)
         return;
     }
 
+    EffectiveStiffness = ComputeEffectiveStiffness();
+
     for (UPhysicsConstraintComponent* Constraint : ConstraintChain)
     {
         if (Constraint)
         {
-            Constraint->ConstraintInstance.SetLinearDriveParams(SpringStiffness, DampingCoefficient, ForceLimit);
-            Constraint->ConstraintInstance.SetAngularDriveParams(
-                SpringStiffness * 0.1f, DampingCoefficient * 0.1f, ForceLimit);
+            ConfigureConstraintStability(Constraint, EffectiveStiffness, DampingCoefficient);
         }
     }
 }
@@ -189,7 +348,9 @@ float UWireRopeConstraintComponent::CalculateTension() const
     if (CurrentWireLength <= WireRestLength)
         return 0.0f;
 
-    float Extension = CurrentWireLength - WireRestLength;
+    float ClampedExtension = FMath::Min(
+        CurrentWireLength - WireRestLength,
+        WireRestLength * (MaxExtensionRatio - 1.0f));
 
     if (!AnchorComponent.IsValid() || !LoadComponent.IsValid())
         return 0.0f;
@@ -198,19 +359,31 @@ float UWireRopeConstraintComponent::CalculateTension() const
     FVector LoadWorldPos = LoadComponent->GetComponentLocation() + LoadAttachOffset;
     FVector Direction = (LoadWorldPos - AnchorWorldPos).GetSafeNormal();
 
+    if (Direction.IsNearlyZero())
+        return 0.0f;
+
     FVector RelativeVelocity = LoadComponent->GetPhysicsLinearVelocity() - AnchorComponent->GetPhysicsLinearVelocity();
     float VelocityAlongRope = FVector::DotProduct(RelativeVelocity, Direction);
 
-    float SpringForce = SpringStiffness * Extension;
+    float EffectiveK = ComputeEffectiveStiffness();
+
+    float SpringForce = EffectiveK * ClampedExtension;
     float DampingForce = DampingCoefficient * VelocityAlongRope;
 
-    return FMath::Max(SpringForce + DampingForce, 0.0f);
+    float TotalForce = SpringForce + DampingForce;
+
+    TotalForce = FMath::Clamp(TotalForce, 0.0f, MaxTensionClamp);
+
+    return TotalForce;
 }
 
 void UWireRopeConstraintComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    ApplySoftConstraintMode(DeltaTime);
     UpdateSpringDamperForces(DeltaTime);
+    ClampSegmentVelocities();
 }
 
 void UWireRopeConstraintComponent::SetSpringDamperParams(float InStiffness, float InDamping, float InWireLength)
@@ -218,6 +391,7 @@ void UWireRopeConstraintComponent::SetSpringDamperParams(float InStiffness, floa
     SpringStiffness = InStiffness;
     DampingCoefficient = InDamping;
     WireRestLength = FMath::Max(InWireLength, MIN_WIRE_LENGTH);
+    EffectiveStiffness = ComputeEffectiveStiffness();
 }
 
 void UWireRopeConstraintComponent::BreakRope()
@@ -250,7 +424,7 @@ void UWireRopeConstraintComponent::RepairRope()
     {
         if (Constraint)
         {
-            Constraint->ConstraintInstance.SetLinearDriveParams(SpringStiffness, DampingCoefficient, ForceLimit);
+            Constraint->ConstraintInstance.SetLinearDriveParams(EffectiveStiffness, DampingCoefficient, ForceLimit);
         }
     }
 

@@ -17,9 +17,17 @@ ASpreaderActor::ASpreaderActor()
     SpreaderFrame->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
     SpreaderFrame->SetCollisionProfileName(TEXT("PhysicsActor"));
     SpreaderFrame->SetMassOverrideInKg(NAME_None, SpreaderMass);
-    SpreaderFrame->SetLinearDamping(0.3f);
-    SpreaderFrame->SetAngularDamping(2.0f);
+    SpreaderFrame->SetLinearDamping(BaseLinearDamping);
+    SpreaderFrame->SetAngularDamping(BaseAngularDamping);
     SpreaderFrame->SetNotifyRigidBodyCollision(true);
+    SpreaderFrame->SetPhysicsMaxAngularVelocityInDegrees(MaxAngularVelocity);
+
+    FBodyInstance* BodyInst = SpreaderFrame->GetBodyInstance();
+    if (BodyInst)
+    {
+        BodyInst->SolverIterationCount = 30;
+        BodyInst->SolverVelocityIterationCount = 15;
+    }
 
     TwistlockSystem = CreateDefaultSubobject<UTwistlockComponent>(TEXT("TwistlockSystem"));
 
@@ -43,8 +51,9 @@ void ASpreaderActor::BeginPlay()
 void ASpreaderActor::SetupSpreaderPhysics()
 {
     SpreaderFrame->SetMassOverrideInKg(NAME_None, SpreaderMass);
-    SpreaderFrame->SetLinearDamping(0.3f);
-    SpreaderFrame->SetAngularDamping(2.0f);
+    SpreaderFrame->SetLinearDamping(BaseLinearDamping);
+    SpreaderFrame->SetAngularDamping(BaseAngularDamping);
+    SpreaderFrame->SetPhysicsMaxAngularVelocityInDegrees(MaxAngularVelocity);
     SpreaderFrame->UpdateMassProperties();
     TotalSuspendedMass = SpreaderMass;
 }
@@ -83,6 +92,8 @@ void ASpreaderActor::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
     CalculatePendulumState();
+    ClampPhysicsVelocities();
+    UpdateLockDamping(DeltaTime);
 }
 
 void ASpreaderActor::CalculatePendulumState()
@@ -95,6 +106,62 @@ void ASpreaderActor::CalculatePendulumState()
 
     PendulumAngleX = FMath::Atan2(VelX, FMath::Sqrt(GRAVITY * 15000.0f)) * 180.0f / PI;
     PendulumAngleY = FMath::Atan2(VelY, FMath::Sqrt(GRAVITY * 15000.0f)) * 180.0f / PI;
+}
+
+void ASpreaderActor::ClampPhysicsVelocities()
+{
+    if (!SpreaderFrame || !SpreaderFrame->IsSimulatingPhysics())
+        return;
+
+    FVector LinVel = SpreaderFrame->GetPhysicsLinearVelocity();
+    FVector AngVel = SpreaderFrame->GetPhysicsAngularVelocityInDegrees();
+
+    float LinSpeed = LinVel.Size();
+    float AngSpeed = AngVel.Size();
+
+    if (FMath::IsNaN(LinSpeed) || FMath::IsNaN(AngSpeed))
+    {
+        SpreaderFrame->SetPhysicsLinearVelocity(FVector::ZeroVector);
+        SpreaderFrame->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+        return;
+    }
+
+    float EffectiveMaxLinVel = MaxLinearVelocity;
+    float EffectiveMaxAngVel = bIsContainerAttached ? StabilizationAngularMaxVel : MaxAngularVelocity;
+
+    if (LinSpeed > EffectiveMaxLinVel)
+    {
+        SpreaderFrame->SetPhysicsLinearVelocity(LinVel.GetSafeNormal() * EffectiveMaxLinVel, false);
+    }
+
+    if (AngSpeed > EffectiveMaxAngVel)
+    {
+        SpreaderFrame->SetPhysicsAngularVelocityInDegrees(AngVel.GetSafeNormal() * EffectiveMaxAngVel, false);
+    }
+}
+
+void ASpreaderActor::UpdateLockDamping(float DeltaTime)
+{
+    if (!bIsLockDamping)
+        return;
+
+    LockDampingTimer -= DeltaTime;
+
+    if (LockDampingTimer > 0.0f)
+    {
+        float T = LockDampingTimer / LockDampingDuration;
+        float CurrentLinDamping = BaseLinearDamping + LockLinearDampingBoost * T;
+        float CurrentAngDamping = BaseAngularDamping + LockAngularDampingBoost * T;
+
+        SpreaderFrame->SetLinearDamping(CurrentLinDamping);
+        SpreaderFrame->SetAngularDamping(CurrentAngDamping);
+    }
+    else
+    {
+        bIsLockDamping = false;
+        SpreaderFrame->SetLinearDamping(BaseLinearDamping);
+        SpreaderFrame->SetAngularDamping(BaseAngularDamping);
+    }
 }
 
 void ASpreaderActor::EngageTwistlocks()
@@ -156,15 +223,34 @@ void ASpreaderActor::HandleContainerAttached(AActor* Container)
 {
     bIsContainerAttached = true;
 
+    bIsLockDamping = true;
+    LockDampingTimer = LockDampingDuration;
+
+    SpreaderFrame->SetLinearDamping(BaseLinearDamping + LockLinearDampingBoost);
+    SpreaderFrame->SetAngularDamping(BaseAngularDamping + LockAngularDampingBoost);
+
     AContainerActor* ContainerActor = Cast<AContainerActor>(Container);
     if (ContainerActor)
     {
         ContainerActor->SetAttachedState(true);
+
+        if (ContainerActor->ContainerMesh)
+        {
+            ContainerActor->ContainerMesh->SetPhysicsMaxAngularVelocityInDegrees(StabilizationAngularMaxVel);
+
+            FBodyInstance* ContainerBody = ContainerActor->ContainerMesh->GetBodyInstance();
+            if (ContainerBody)
+            {
+                ContainerBody->SolverIterationCount = 30;
+                ContainerBody->SolverVelocityIterationCount = 15;
+            }
+        }
+
         UpdateSuspendedMass(ContainerActor->GetCurrentWeight());
     }
 
     OnContainerLocked(Container);
-    UE_LOG(LogQuayCranePhysics, Log, TEXT("Spreader: Container ATTACHED - %s"), *Container->GetName());
+    UE_LOG(LogQuayCranePhysics, Log, TEXT("Spreader: Container ATTACHED - %s (lock damping engaged)"), *Container->GetName());
 }
 
 void ASpreaderActor::HandleContainerDetached()
@@ -172,7 +258,12 @@ void ASpreaderActor::HandleContainerDetached()
     bIsContainerAttached = false;
     TotalSuspendedMass = SpreaderMass;
     SpreaderFrame->SetMassOverrideInKg(NAME_None, SpreaderMass);
+    SpreaderFrame->SetLinearDamping(BaseLinearDamping);
+    SpreaderFrame->SetAngularDamping(BaseAngularDamping);
+    SpreaderFrame->SetPhysicsMaxAngularVelocityInDegrees(MaxAngularVelocity);
     SpreaderFrame->UpdateMassProperties();
+
+    bIsLockDamping = false;
 
     OnContainerReleased();
     UE_LOG(LogQuayCranePhysics, Log, TEXT("Spreader: Container DETACHED"));

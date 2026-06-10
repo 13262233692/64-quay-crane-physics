@@ -49,6 +49,24 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|Physics")
     float AngularTwistLimit = 5.0f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float GlobalMaxTension = 48000000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float EmergencyTensionReliefThreshold = 36000000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float EmergencyStiffnessReductionFactor = 0.2f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float ShortHoistLengthThreshold = 2000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float ShortHoistStiffnessScale = 0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float PerRopeMaxTensionClamp = 12000000.0f;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
     TArray<float> RopeTensions;
 
@@ -66,6 +84,12 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
     float MinTension = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
+    bool bIsInEmergencyRelief = false;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
+    float CurrentEffectiveStiffness = 0.0f;
 
     UFUNCTION(BlueprintCallable, Category = "WireRope")
     void ConnectTrolleyToSpreader(
@@ -99,6 +123,8 @@ public:
 protected:
     void CreateWireRopes();
     void UpdateTensionMetrics();
+    void CheckEmergencyTensionRelief();
+    void ComputeSolverSafeStiffness();
 
 private:
     static constexpr int32 ROPE_COUNT = 4;

@@ -6,6 +6,7 @@
 #include "SpreaderActor.h"
 #include "WireRopeActor.h"
 #include "ContainerActor.h"
+#include "PhysicsSubstepManager.h"
 #include "QuayCraneActor.generated.h"
 
 UENUM(BlueprintType)
@@ -19,7 +20,8 @@ enum class ECraneOperationMode : uint8
     Lifting,
     Transporting,
     Placing,
-    Unlocking
+    Unlocking,
+    EmergencyFreeze
 };
 
 UCLASS()
@@ -57,6 +59,9 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|SubActors")
     AWireRopeActor* WireRopeSystem;
 
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|Physics")
+    UPhysicsSubstepManager* PhysicsManager;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|Dimensions")
     float BoomLength = 70000.0f;
 
@@ -81,6 +86,12 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|Physics")
     float CraneStructureMass = 100000.0f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|Safety")
+    float MaxSimultaneousAccelRatio = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crane|Safety")
+    float MinHoistLengthForTravel = 2000.0f;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|State")
     ECraneOperationMode OperationMode = ECraneOperationMode::Idle;
 
@@ -98,6 +109,12 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|State")
     AContainerActor* CurrentContainer = nullptr;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|State")
+    EPhysicsStabilityState PhysicsStability = EPhysicsStabilityState::Stable;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crane|State")
+    bool bIsSafetyInterlockActive = false;
 
     UFUNCTION(BlueprintCallable, Category = "Crane|Control")
     void SetTrolleyTravel(float Input);
@@ -136,6 +153,9 @@ protected:
     void UpdateHoistSync();
     void ScanForNearbyContainers();
     void ProcessAutoSequence(float DeltaTime);
+    void RegisterPhysicsBodies();
+    void CheckSafetyInterlocks();
+    void DetectPhysicsExplosion();
 
     UPROPERTY()
     TArray<AContainerActor*> NearbyContainers;

@@ -27,6 +27,8 @@ AQuayCraneActor::AQuayCraneActor()
 
     CranePortalBeam = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("CranePortalBeam"));
     CranePortalBeam->SetupAttachment(CraneBoom);
+
+    PhysicsManager = CreateDefaultSubobject<UPhysicsSubstepManager>(TEXT("PhysicsManager"));
 }
 
 void AQuayCraneActor::BeginPlay()
@@ -36,13 +38,44 @@ void AQuayCraneActor::BeginPlay()
 
     GetWorldTimerManager().SetTimerForNextTick(this, &AQuayCraneActor::ConnectWireRopeSystem);
 
+    GetWorldTimerManager().SetTimerForNextTick(this, &AQuayCraneActor::RegisterPhysicsBodies);
+
     UE_LOG(LogQuayCranePhysics, Log, TEXT("QuayCrane initialized - Boom: %.0f, Portal: %.0f x %.0f"),
         BoomLength, PortalWidth, PortalHeight);
 }
 
+void AQuayCraneActor::RegisterPhysicsBodies()
+{
+    if (!PhysicsManager) return;
+
+    if (Trolley && Trolley->TrolleyMesh)
+    {
+        PhysicsManager->RegisterPhysicsBody(Trolley->TrolleyMesh);
+    }
+
+    if (Spreader && Spreader->SpreaderFrame)
+    {
+        PhysicsManager->RegisterPhysicsBody(Spreader->SpreaderFrame);
+    }
+
+    TArray<AActor*> AllContainers;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AContainerActor::StaticClass(), AllContainers);
+    for (AActor* Actor : AllContainers)
+    {
+        AContainerActor* Container = Cast<AContainerActor>(Actor);
+        if (Container && Container->ContainerMesh)
+        {
+            PhysicsManager->RegisterPhysicsBody(Container->ContainerMesh);
+        }
+    }
+
+    PhysicsManager->ApplySolverIterationOverride();
+
+    UE_LOG(LogQuayCranePhysics, Log, TEXT("Physics bodies registered with SubstepManager"));
+}
+
 void AQuayCraneActor::SpawnSubActors()
 {
-    FTransform CraneTransform = GetActorTransform();
     FVector BoomBottom = GetActorLocation() + FVector(0, 0, -BoomHeight * 0.5f);
     FVector TrolleySpawnLoc = BoomBottom + FVector(0, 0, 500.0f);
     FVector SpreaderSpawnLoc = TrolleySpawnLoc - FVector(0, 0, InitialHoistLength);
@@ -119,9 +152,69 @@ void AQuayCraneActor::ConnectWireRopeSystem()
     UE_LOG(LogQuayCranePhysics, Log, TEXT("Wire rope system connected: 4 ropes, %.0f mm hoist"), InitialHoistLength);
 }
 
+void AQuayCraneActor::CheckSafetyInterlocks()
+{
+    if (!Trolley) return;
+
+    bIsSafetyInterlockActive = false;
+
+    float HoistRatio = 1.0f;
+    if (MaxHoistLength > MinHoistLengthForTravel)
+    {
+        HoistRatio = (CurrentHoistLength - MinHoistLengthForTravel) / (MaxHoistLength - MinHoistLengthForTravel);
+    }
+
+    if (CurrentHoistLength < MinHoistLengthForTravel && FMath::Abs(Trolley->CurrentTravelSpeed) > MaxTravelSpeed * MaxSimultaneousAccelRatio)
+    {
+        bIsSafetyInterlockActive = true;
+
+        float TravelDamping = FMath::Clamp(HoistRatio / MaxSimultaneousAccelRatio, 0.1f, 1.0f);
+        Trolley->SetTravelInput(Trolley->CurrentTravelSpeed / MaxTravelSpeed * TravelDamping);
+    }
+
+    if (bIsContainerAttached && PhysicsManager &&
+        PhysicsManager->StabilityState >= EPhysicsStabilityState::Critical)
+    {
+        bIsSafetyInterlockActive = true;
+        Trolley->SetTravelInput(0.0f);
+        Trolley->SetHoistInput(0.0f);
+    }
+}
+
+void AQuayCraneActor::DetectPhysicsExplosion()
+{
+    if (!PhysicsManager) return;
+
+    PhysicsStability = PhysicsManager->StabilityState;
+
+    if (PhysicsStability == EPhysicsStabilityState::Emergency)
+    {
+        if (OperationMode != ECraneOperationMode::EmergencyFreeze)
+        {
+            OperationMode = ECraneOperationMode::EmergencyFreeze;
+            bAutoSequenceActive = false;
+            UE_LOG(LogQuayCranePhysics, Error, TEXT("CRANE EMERGENCY FREEZE - Physics explosion detected!"));
+        }
+    }
+}
+
 void AQuayCraneActor::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+
+    DetectPhysicsExplosion();
+    CheckSafetyInterlocks();
+
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze)
+    {
+        if (PhysicsStability == EPhysicsStabilityState::Stable ||
+            PhysicsStability == EPhysicsStabilityState::Warning)
+        {
+            OperationMode = ECraneOperationMode::Idle;
+            UE_LOG(LogQuayCranePhysics, Log, TEXT("Crane emergency freeze lifted - physics stabilized"));
+        }
+        return;
+    }
 
     UpdateOperationMode(DeltaTime);
     UpdateHoistSync();
@@ -180,6 +273,12 @@ void AQuayCraneActor::UpdateHoistSync()
 
     float TargetLength = Trolley->GetTargetHoistLength();
     WireRopeSystem->UpdateHoistLength(TargetLength);
+
+    if (bIsContainerAttached && WireRopeSystem)
+    {
+        float TotalLoadMass = Spreader ? Spreader->TotalSuspendedMass : 10000.0f;
+        WireRopeSystem->UpdatePhysicsForLoad(TotalLoadMass);
+    }
 }
 
 void AQuayCraneActor::ScanForNearbyContainers()
@@ -207,6 +306,7 @@ void AQuayCraneActor::ScanForNearbyContainers()
 
 void AQuayCraneActor::SetTrolleyTravel(float Input)
 {
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze) return;
     if (Trolley)
     {
         Trolley->SetTravelInput(Input);
@@ -215,6 +315,7 @@ void AQuayCraneActor::SetTrolleyTravel(float Input)
 
 void AQuayCraneActor::SetHoistMovement(float Input)
 {
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze) return;
     if (Trolley)
     {
         Trolley->SetHoistInput(Input);
@@ -247,6 +348,7 @@ void AQuayCraneActor::EmergencyStop()
     {
         Spreader->EmergencyRelease();
     }
+    bAutoSequenceActive = false;
 }
 
 void AQuayCraneActor::SpawnContainerAtLocation(const FVector& Location, EContainerSize Size)
@@ -264,6 +366,22 @@ void AQuayCraneActor::SpawnContainerAtLocation(const FVector& Location, EContain
     {
         NewContainer->ContainerSize = Size;
         NewContainer->bIsLoaded = true;
+
+        if (NewContainer->ContainerMesh)
+        {
+            FBodyInstance* BodyInst = NewContainer->ContainerMesh->GetBodyInstance();
+            if (BodyInst)
+            {
+                BodyInst->SolverIterationCount = 30;
+                BodyInst->SolverVelocityIterationCount = 15;
+            }
+
+            if (PhysicsManager)
+            {
+                PhysicsManager->RegisterPhysicsBody(NewContainer->ContainerMesh);
+            }
+        }
+
         UE_LOG(LogQuayCranePhysics, Log, TEXT("Container spawned at: %s"), *Location.ToString());
     }
 }
@@ -271,6 +389,7 @@ void AQuayCraneActor::SpawnContainerAtLocation(const FVector& Location, EContain
 void AQuayCraneActor::AutoLiftSequence()
 {
     if (!Spreader || !Trolley) return;
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze) return;
 
     bAutoSequenceActive = true;
     AutoSequencePhase = 0.0f;
@@ -283,6 +402,7 @@ void AQuayCraneActor::AutoLiftSequence()
 void AQuayCraneActor::AutoPlaceSequence()
 {
     if (!Spreader || !Trolley || !bIsContainerAttached) return;
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze) return;
 
     bAutoSequenceActive = true;
     AutoSequencePhase = 10.0f;
@@ -302,6 +422,12 @@ void AQuayCraneActor::CancelAutoSequence()
 
 void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
 {
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze)
+    {
+        bAutoSequenceActive = false;
+        return;
+    }
+
     AutoSequenceTimer += DeltaTime;
 
     if (AutoSequencePhase < 5.0f)
@@ -317,12 +443,12 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
             }
             else
             {
-                SetHoistMovement(-0.3f);
+                SetHoistMovement(-0.2f);
             }
         }
         else if (AutoSequencePhase < 2.0f)
         {
-            if (AutoSequenceTimer > 1.5f)
+            if (AutoSequenceTimer > 2.0f)
             {
                 AutoSequencePhase = 2.0f;
                 AutoSequenceTimer = 0.0f;
@@ -330,8 +456,8 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
         }
         else if (AutoSequencePhase < 3.0f)
         {
-            SetHoistMovement(0.8f);
-            if (AutoSequenceTimer > 3.0f)
+            SetHoistMovement(0.5f);
+            if (AutoSequenceTimer > 4.0f)
             {
                 SetHoistMovement(0.0f);
                 AutoSequencePhase = 3.0f;
@@ -341,8 +467,8 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
         }
         else
         {
-            SetTrolleyTravel(0.5f);
-            if (AutoSequenceTimer > 5.0f)
+            SetTrolleyTravel(0.3f);
+            if (AutoSequenceTimer > 6.0f)
             {
                 SetTrolleyTravel(0.0f);
                 bAutoSequenceActive = false;
@@ -354,8 +480,8 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
     {
         if (AutoSequencePhase < 11.0f)
         {
-            SetTrolleyTravel(-0.5f);
-            if (AutoSequenceTimer > 5.0f)
+            SetTrolleyTravel(-0.3f);
+            if (AutoSequenceTimer > 6.0f)
             {
                 SetTrolleyTravel(0.0f);
                 AutoSequencePhase = 11.0f;
@@ -364,8 +490,8 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
         }
         else if (AutoSequencePhase < 12.0f)
         {
-            SetHoistMovement(-0.5f);
-            if (AutoSequenceTimer > 4.0f)
+            SetHoistMovement(-0.3f);
+            if (AutoSequenceTimer > 5.0f)
             {
                 SetHoistMovement(0.0f);
                 AutoSequencePhase = 12.0f;
@@ -375,7 +501,7 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
         else if (AutoSequencePhase < 13.0f)
         {
             DisengageTwistlocks();
-            if (AutoSequenceTimer > 1.0f)
+            if (AutoSequenceTimer > 1.5f)
             {
                 AutoSequencePhase = 13.0f;
                 AutoSequenceTimer = 0.0f;
@@ -383,8 +509,8 @@ void AQuayCraneActor::ProcessAutoSequence(float DeltaTime)
         }
         else
         {
-            SetHoistMovement(0.8f);
-            if (AutoSequenceTimer > 3.0f)
+            SetHoistMovement(0.5f);
+            if (AutoSequenceTimer > 4.0f)
             {
                 SetHoistMovement(0.0f);
                 bAutoSequenceActive = false;
@@ -446,5 +572,34 @@ void AQuayCraneActor::DrawDebugPhysicsState()
             FColor SocketColor = Socket.bIsEngaged ? FColor::Red : FColor::Green;
             DrawDebugSphere(GetWorld(), Socket.WorldPosition, 20.0f, 8, SocketColor, false, 0.1f, 0, 1.0f);
         }
+    }
+
+    if (bIsSafetyInterlockActive)
+    {
+        DrawDebugString(GetWorld(), GetActorLocation() + FVector(0, 0, 5000.0f),
+            TEXT("SAFETY INTERLOCK ACTIVE"), nullptr, FColor::Orange, 0.1f, true, 2.0f);
+    }
+
+    if (OperationMode == ECraneOperationMode::EmergencyFreeze)
+    {
+        DrawDebugString(GetWorld(), GetActorLocation() + FVector(0, 0, 6000.0f),
+            TEXT("!!! EMERGENCY FREEZE !!!"), nullptr, FColor::Red, 0.1f, true, 3.0f);
+    }
+
+    if (PhysicsManager)
+    {
+        FColor StabilityColor = FColor::Green;
+        switch (PhysicsManager->StabilityState)
+        {
+        case EPhysicsStabilityState::Warning:  StabilityColor = FColor::Yellow; break;
+        case EPhysicsStabilityState::Critical: StabilityColor = FColor::Orange; break;
+        case EPhysicsStabilityState::Emergency: StabilityColor = FColor::Red; break;
+        default: break;
+        }
+        DrawDebugString(GetWorld(), GetActorLocation() + FVector(0, 0, 4000.0f),
+            FString::Printf(TEXT("Physics: %s | Tension: %.0f | PeakVel: %.0f"),
+                *UEnum::GetValueAsString(PhysicsManager->StabilityState),
+                TotalWireTension, PhysicsManager->PeakVelocity),
+            nullptr, StabilityColor, 0.1f, true, 1.5f);
     }
 }

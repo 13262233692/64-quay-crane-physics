@@ -57,6 +57,36 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|Constraint")
     int32 ChainSegments = 6;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float MaxTensionClamp = 12000000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float MaxExtensionRatio = 1.8f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float MinRestLengthForFullStiffness = 500.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float SoftStiffnessScale = 0.1f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float MaxSegmentLinearVelocity = 8000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float MaxSegmentAngularVelocity = 1440.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float SegmentDampingBoostOnShortRope = 8.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float LinearDriveSoftness = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float AngularDriveSoftness = 0.001f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "WireRope|AntiExplosion")
+    float ContactOffsetOverride = 5.0f;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
     float CurrentTension = 0.0f;
 
@@ -68,6 +98,12 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
     float RopeExtensionRatio = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
+    float EffectiveStiffness = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "WireRope|State")
+    bool bIsInSoftMode = false;
 
     UPROPERTY()
     TArray<UPhysicsConstraintComponent*> ConstraintChain;
@@ -91,6 +127,10 @@ private:
     void BuildConstraintChain();
     void UpdateSpringDamperForces(float DeltaTime);
     float CalculateTension() const;
+    void ClampSegmentVelocities();
+    void ApplySoftConstraintMode(float DeltaTime);
+    float ComputeEffectiveStiffness() const;
+    void ConfigureConstraintStability(UPhysicsConstraintComponent* Constraint, float Stiffness, float Damping);
 
     UPROPERTY()
     UStaticMesh* RopeSegmentMeshAsset;

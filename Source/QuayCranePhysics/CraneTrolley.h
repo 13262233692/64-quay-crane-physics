@@ -57,6 +57,21 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|RopeAnchors")
     float RopeAnchorSpreadY = 2000.0f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
+    float MaxJerk = 2000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
+    float MaxPhysicsLinearVelocity = 5000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
+    float MaxPhysicsAngularVelocity = 720.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
+    float ProgressiveDecelFactor = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trolley|AntiExplosion")
+    float VelocityBlendAlpha = 0.15f;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|State")
     float CurrentTravelSpeed = 0.0f;
 
@@ -71,6 +86,12 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|State")
     FVector CurrentVelocity = FVector::ZeroVector;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|State")
+    float CurrentJerk = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trolley|State")
+    float PreviousAcceleration = 0.0f;
 
     UFUNCTION(BlueprintCallable, Category = "Trolley")
     void SetTravelInput(float InputValue);
@@ -91,9 +112,11 @@ protected:
     void UpdateTravelMovement(float DeltaTime);
     void UpdateHoistMovement(float DeltaTime);
     void SetupRopeAnchorPoints();
+    void ClampPhysicsVelocities();
 
 private:
     float TravelInput = 0.0f;
     float HoistInput = 0.0f;
     float TargetHoistLength = 15000.0f;
+    float PreviousTravelSpeed = 0.0f;
 };

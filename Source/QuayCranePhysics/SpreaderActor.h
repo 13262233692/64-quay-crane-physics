@@ -43,6 +43,24 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|RopeAttach")
     float RopeAttachSpreadY = 2000.0f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float MaxLinearVelocity = 5000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float MaxAngularVelocity = 720.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float LockDampingDuration = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float LockAngularDampingBoost = 20.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float LockLinearDampingBoost = 5.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spreader|AntiExplosion")
+    float StabilizationAngularMaxVel = 360.0f;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
     float PendulumAngleX = 0.0f;
 
@@ -57,6 +75,18 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
     float TotalSuspendedMass = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
+    bool bIsLockDamping = false;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
+    float LockDampingTimer = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
+    float BaseLinearDamping = 0.3f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Spreader|State")
+    float BaseAngularDamping = 2.0f;
 
     UFUNCTION(BlueprintCallable, Category = "Spreader")
     void EngageTwistlocks();
@@ -87,6 +117,8 @@ protected:
     void SetupRopeAttachPoints();
     void CalculatePendulumState();
     void BindTwistlockEvents();
+    void ClampPhysicsVelocities();
+    void UpdateLockDamping(float DeltaTime);
 
     UFUNCTION()
     void HandleContainerAttached(AActor* Container);
